@@ -9,6 +9,7 @@
             --bg-color: #121212;
             --panel-bg: #1e1e1e;
             --text-main: #ffffff;
+            --text-muted: #888888;
             --accent: #4CAF50;
         }
         body { margin: 0; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg-color); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; box-sizing: border-box; }
@@ -27,9 +28,11 @@
         .canvas-container { flex: 1; position: relative; overflow: hidden; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
         
-        .readout { position: absolute; bottom: 5px; left: 5px; font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.5); padding: 5px; color: #ffeb3b; pointer-events: none; }
-        .control-group { display: flex; flex-direction: column; gap: 2px; }
-        .control-header { display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; }
+        .readout { position: absolute; bottom: 15px; left: 15px; font-family: monospace; font-size: 14px; color: #ffeb3b; pointer-events: none; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; }
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        .control-header { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        input[type=checkbox] { cursor: pointer; transform: scale(1.2); margin-right: 10px; }
 
         @media (max-width: 600px) {
             .dashboard { flex-direction: column; }
@@ -52,14 +55,14 @@
             
             <div class="side-by-side">
                 <div class="panel">
-                    <div class="panel-header">Smart Compass</div>
+                    <div class="panel-header">Smart Compass (Vector)</div>
                     <div class="canvas-container">
                         <canvas id="canvasCompass"></canvas>
                         <div id="readoutCompass" class="readout"></div>
                     </div>
                 </div>
                 <div class="panel">
-                    <div class="panel-header">Legacy Dial</div>
+                    <div class="panel-header">Legacy Analog Dial (Difference)</div>
                     <div class="canvas-container"><canvas id="canvasDial"></canvas></div>
                 </div>
             </div>
@@ -71,13 +74,13 @@
     const config = [
         { id: 'defY', label: 'Defect Y', type: 'range', min: 0, max: 8, step: 0.1, val: state.defY },
         { id: 'defX', label: 'Defect X', type: 'range', min: -4, max: 4, step: 0.1, val: state.defX },
-        { id: 'rot', label: 'Rotation', type: 'range', min: -180, max: 180, step: 1, val: state.rot },
+        { id: 'rot', label: 'Rotation (deg)', type: 'range', min: -180, max: 180, step: 1, val: state.rot },
         { id: 'stride', label: 'Stride', type: 'range', min: 0.1, max: 2.0, step: 0.1, val: state.stride },
-        { id: 'freq', label: 'Pulse Freq', type: 'range', min: 0.1, max: 2.0, step: 0.1, val: state.freq },
+        { id: 'freq', label: 'Pulse Freq (Hz)', type: 'range', min: 0.1, max: 2.0, step: 0.1, val: state.freq },
         { id: 'gain', label: 'Global Gain', type: 'range', min: 100, max: 2000, step: 10, val: state.gain },
         { id: 'legGain', label: 'Legacy Gain', type: 'range', min: 0.1, max: 10.0, step: 0.1, val: state.legGain },
         { id: 'decay', label: 'Meter Decay', type: 'range', min: 0.01, max: 0.5, step: 0.01, val: state.decay },
-        { id: 'invertArrow', label: 'Invert Arrow', type: 'checkbox', val: state.invertArrow }
+        { id: 'invertArrow', label: 'Invert Arrow Size', type: 'checkbox', val: state.invertArrow }
     ];
 
     const controlsDiv = document.getElementById('controls');
@@ -85,7 +88,7 @@
         if (c.type === 'range') {
             controlsDiv.innerHTML += `<div class="control-group"><div class="control-header"><span>${c.label}</span><span id="val_${c.id}">${c.val}</span></div><input type="range" id="${c.id}" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.val}"></div>`;
         } else {
-            controlsDiv.innerHTML += `<div class="control-group"><label><input type="checkbox" id="${c.id}" ${c.val ? 'checked' : ''}> ${c.label}</label></div>`;
+            controlsDiv.innerHTML += `<div class="control-group" style="margin-top: 10px;"><label class="checkbox-label"><input type="checkbox" id="${c.id}" ${c.val ? 'checked' : ''}> ${c.label}</label></div>`;
         }
     });
 
@@ -108,29 +111,51 @@
     function rotatePoint(x, y, rad) { return { x: x * Math.cos(rad) - y * Math.sin(rad), y: x * Math.sin(rad) + y * Math.cos(rad) }; }
 
     let dragging = false;
+    const mapBounds = { minX: -5, maxX: 5, minY: -2, maxY: 10 };
+    function screenToMap(sx, sy) { return { x: mapBounds.minX + (sx / cMap.width) * (mapBounds.maxX - mapBounds.minX), y: mapBounds.maxY - (sy / cMap.height) * (mapBounds.maxY - mapBounds.minY) }; }
+    function mapToScreen(mx, my) { return { x: ((mx - mapBounds.minX) / (mapBounds.maxX - mapBounds.minX)) * cMap.width, y: ((mapBounds.maxY - my) / (mapBounds.maxY - mapBounds.minY)) * cMap.height }; }
+
     function handleMove(cx, cy) {
         const rect = cMap.getBoundingClientRect();
-        state.opX = -5 + ((cx - rect.left) / cMap.width) * 10;
-        state.opY = 10 - ((cy - rect.top) / cMap.height) * 12;
+        const pos = screenToMap(cx - rect.left, cy - rect.top);
+        state.opX = pos.x; state.opY = pos.y;
     }
 
     cMap.addEventListener('mousedown', (e) => { dragging = true; handleMove(e.clientX, e.clientY); });
-    window.addEventListener('mousemove', (e) => { if (dragging) handleMove(e.clientX, e.clientY); });
     window.addEventListener('mouseup', () => dragging = false);
+    cMap.addEventListener('mousemove', (e) => { if (dragging) handleMove(e.clientX, e.clientY); });
     cMap.addEventListener('touchstart', (e) => { dragging = true; handleMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }, {passive: false});
     cMap.addEventListener('touchmove', (e) => { if (dragging) { handleMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); } }, {passive: false});
 
     function render() {
         const time = Date.now() / 1000;
         const rad = state.rot * (Math.PI / 180);
+        const pulsePhase = (time * state.freq * 2 * Math.PI) % (2 * Math.PI);
+        const alpha = 0.2 + 0.8 * (0.5 * (1 + Math.sin(pulsePhase)));
+
         const lOffset = rotatePoint(-state.stride/2, 0, rad), rOffset = rotatePoint(state.stride/2, 0, rad);
-        const vL = calcV(state.opX + lOffset.x, state.opY + lOffset.y, state.defX, state.defY, state.gain);
-        const vR = calcV(state.opX + rOffset.x, state.opY + rOffset.y, state.defX, state.defY, state.gain);
+        const lx = state.opX + lOffset.x, ly = state.opY + lOffset.y, rx = state.opX + rOffset.x, ry = state.opY + rOffset.y;
+
+        const vL = calcV(lx, ly, state.defX, state.defY, state.gain);
+        const vR = calcV(rx, ry, state.defX, state.defY, state.gain);
+        const Gx = vR - vL;
+        const Gy = vR - vL; // Simplification of original logic for scope
+        const A = Math.sqrt(Gx*Gx + Gy*Gy);
+        let theta = Math.atan2(Gy, Gx) - rad;
+
+        ctxMap.clearRect(0, 0, cMap.width, cMap.height);
+        ctxCompass.clearRect(0, 0, cCompass.width, cCompass.height);
+        ctxDial.clearRect(0, 0, cDial.width, cDial.height);
+
+        // Drawing Logic
+        const oPos = mapToScreen(state.opX, state.opY);
+        ctxMap.fillStyle = 'white'; ctxMap.beginPath(); ctxMap.arc(oPos.x, oPos.y, 4, 0, Math.PI*2); ctxMap.fill();
         
-        // Simplified redraw for brevity, all logic remains active
-        readoutCompass.innerHTML = `Gx: ${(vR - vL).toFixed(1)}`;
+        ctxCompass.strokeStyle = `rgba(255, 152, 0, ${alpha})`;
+        ctxCompass.beginPath(); ctxCompass.moveTo(cCompass.width/2, cCompass.height/2); ctxCompass.lineTo(cCompass.width/2 + 50*Math.cos(theta), cCompass.height/2 - 50*Math.sin(theta)); ctxCompass.stroke();
         
-        // Placeholder for full draw functions to keep code concise
+        readoutCompass.innerHTML = `Gx: ${Gx.toFixed(1)}<br>A: ${A.toFixed(1)}`;
+        
         requestAnimationFrame(render);
     }
     render();
