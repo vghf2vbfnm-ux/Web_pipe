@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DCVG Pipeline Simulator</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-bg: #1e1e1e;
+            --text-main: #ffffff;
+            --text-muted: #888888;
+            --accent: #4CAF50;
+        }
+        body {
+            margin: 0; padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color); color: var(--text-main);
+            display: flex; flex-direction: column; height: 100vh; box-sizing: border-box;
+        }
+        h1 { margin: 0 0 20px 0; font-size: 24px; text-align: center; }
+        
+        .dashboard { display: flex; flex: 1; gap: 20px; min-height: 0; }
+        
+        .controls {
+            flex: 0 0 300px; background: var(--panel-bg); padding: 20px;
+            border-radius: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px;
+        }
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        .control-header { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        input[type=checkbox] { cursor: pointer; transform: scale(1.2); margin-right: 10px; }
+        .checkbox-label { display: flex; align-items: center; font-size: 14px; font-weight: bold; cursor: pointer; user-select: none; }
+        
+        .visuals { flex: 1; display: flex; gap: 20px; min-width: 0; }
+        
+        .panel {
+            flex: 1; background: var(--panel-bg); border-radius: 8px;
+            display: flex; flex-direction: column; position: relative;
+        }
+        .panel-header { padding: 15px; font-weight: bold; text-align: center; border-bottom: 1px solid #333; }
+        .canvas-container { flex: 1; position: relative; overflow: hidden; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+        
+        .readout {
+            position: absolute; bottom: 15px; left: 15px;
+            font-family: monospace; font-size: 14px; color: #ffeb3b;
+            pointer-events: none; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px;
+        }
+
+        /* --- MOBILE RESPONSIVE LAYOUT --- */
+        @media (max-width: 800px) {
+            body { height: auto; padding: 10px; }
+            .dashboard { flex-direction: column; }
+            .visuals { flex-direction: column; }
+            .controls { flex: none; height: auto; max-height: 40vh; }
+            .panel { min-height: 350px; flex: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Interactive DCVG Pipeline Defect Simulator</h1>
+    
+    <div class="dashboard">
+        <div class="controls" id="controls"></div>
+
+        <div class="visuals">
+            <div class="panel">
+                <div class="panel-header">Physical Map (Drag Probes)</div>
+                <div class="canvas-container"><canvas id="canvasMap"></canvas></div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">Smart Compass (Vector)</div>
+                <div class="canvas-container">
+                    <canvas id="canvasCompass"></canvas>
+                    <div id="readoutCompass" class="readout"></div>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-header">Legacy Analog Dial (Difference)</div>
+                <div class="canvas-container"><canvas id="canvasDial"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // --- STATE & CONFIG ---
+    const state = {
+        defY: 6.0, defX: 0.0, rot: 0, stride: 0.5, freq: 0.5,
+        gain: 500, legGain: 1.0, decay: 0.15, invertArrow: false,
+        opX: 0.0, opY: 2.0, needlePos: 0.0
+    };
+
+    const config = [
+        { id: 'defY', label: 'Defect Y', type: 'range', min: 0, max: 8, step: 0.1, val: state.defY },
+        { id: 'defX', label: 'Defect X', type: 'range', min: -4, max: 4, step: 0.1, val: state.defX },
+        { id: 'rot', label: 'Rotation (deg)', type: 'range', min: -180, max: 180, step: 1, val: state.rot },
+        { id: 'stride', label: 'Stride', type: 'range', min: 0.1, max: 2.0, step: 0.1, val: state.stride },
+        { id: 'freq', label: 'Pulse Freq (Hz)', type: 'range', min: 0.1, max: 2.0, step: 0.1, val: state.freq },
+        { id: 'gain', label: 'Global Gain', type: 'range', min: 100, max: 2000, step: 10, val: state.gain },
+        { id: 'legGain', label: 'Legacy Gain', type: 'range', min: 0.1, max: 10.0, step: 0.1, val: state.legGain },
+        { id: 'decay', label: 'Meter Decay', type: 'range', min: 0.01, max: 0.5, step: 0.01, val: state.decay },
+        { id: 'invertArrow', label: 'Invert Arrow Size', type: 'checkbox', val: state.invertArrow }
+    ];
+
+    // --- DOM SETUP ---
+    const controlsDiv = document.getElementById('controls');
+    config.forEach(c => {
+        if (c.type === 'range') {
+            controlsDiv.innerHTML += `
+                <div class="control-group">
+                    <div class="control-header">
+                        <span>${c.label}</span>
+                        <span id="val_${c.id}">${c.val}</span>
+                    </div>
+                    <input type="range" id="${c.id}" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.val}">
+                </div>
+            `;
+        } else if (c.type === 'checkbox') {
+            controlsDiv.innerHTML += `
+                <div class="control-group" style="margin-top: 10px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="${c.id}" ${c.val ? 'checked' : ''}>
+                        ${c.label}
+                    </label>
+                </div>
+            `;
+        }
+    });
+
+    config.forEach(c => {
+        const el = document.getElementById(c.id);
+        if (c.type === 'range') {
+            el.addEventListener('input', (e) => {
+                const v = parseFloat(e.target.value);
+                state[c.id] = v;
+                document.getElementById(`val_${c.id}`).innerText = v.toFixed(c.step < 1 ? 2 : 0);
+            });
+        } else if (c.type === 'checkbox') {
+            el.addEventListener('change', (e) => { state[c.id] = e.target.checked; });
+        }
+    });
+
+    const cMap = document.getElementById('canvasMap');
+    const ctxMap = cMap.getContext('2d');
+    const cCompass = document.getElementById('canvasCompass');
+    const ctxCompass = cCompass.getContext('2d');
+    const cDial = document.getElementById('canvasDial');
+    const ctxDial = cDial.getContext('2d');
+    const readoutCompass = document.getElementById('readoutCompass');
+
+    function resize() {
+        [cMap, cCompass, cDial].forEach(c => {
+            c.width = c.parentElement.clientWidth;
+            c.height = c.parentElement.clientHeight;
+        });
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- PHYSICS MATH ---
+    function calcV(px, py, dx, dy, gain) {
+        return gain / (Math.pow(px - dx, 2) + Math.pow(py - dy, 2) + 0.1);
+    }
+
+    function rotatePoint(x, y, rad) {
+        return { x: x * Math.cos(rad) - y * Math.sin(rad), y: x * Math.sin(rad) + y * Math.cos(rad) };
+    }
+
+    // --- MOUSE & TOUCH INTERACTION ---
+    let dragging = false;
+    const mapBounds = { minX: -5, maxX: 5, minY: -2, maxY: 10 };
+
+    function screenToMap(sx, sy) {
+        return {
+            x: mapBounds.minX + (sx / cMap.width) * (mapBounds.maxX - mapBounds.minX),
+            y: mapBounds.maxY - (sy / cMap.height) * (mapBounds.maxY - mapBounds.minY)
+        };
+    }
+    function mapToScreen(mx, my) {
+        return {
+            x: ((mx - mapBounds.minX) / (mapBounds.maxX - mapBounds.minX)) * cMap.width,
+            y: ((mapBounds.maxY - my) / (mapBounds.maxY - mapBounds.minY)) * cMap.height
+        };
+    }
+
+    function handleMove(clientX, clientY) {
+        const rect = cMap.getBoundingClientRect();
+        const pos = screenToMap(clientX - rect.left, clientY - rect.top);
+        state.opX = pos.x; state.opY = pos.y;
+    }
+
+    // Mouse Events
+    cMap.addEventListener('mousedown', (e) => { dragging = true; handleMove(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', () => dragging = false);
+    cMap.addEventListener('mousemove', (e) => { if (dragging) handleMove(e.clientX, e.clientY); });
+
+    // Touch Events for iPhone/iPad
+    cMap.addEventListener('touchstart', (e) => { 
+        dragging = true; 
+        handleMove(e.touches[0].clientX, e.touches[0].clientY); 
+        e.preventDefault(); // Prevents scrolling the page while dragging
+    }, {passive: false});
+    window.addEventListener('touchend', () => dragging = false);
+    cMap.addEventListener('touchmove', (e) => { 
+        if (dragging) {
+            handleMove(e.touches[0].clientX, e.touches[0].clientY); 
+            e.preventDefault();
+        }
+    }, {passive: false});
+
+    // --- RENDER LOOP ---
+    function render() {
+        const time = Date.now() / 1000;
+        const rad = state.rot * (Math.PI / 180);
+        
+        const pulsePhase = (time * state.freq * 2 * Math.PI) % (2 * Math.PI);
+        const alpha = 0.2 + 0.8 * (0.5 * (1 + Math.sin(pulsePhase)));
+
+        const lOffset = rotatePoint(-state.stride/2, 0, rad);
+        const rOffset = rotatePoint(state.stride/2, 0, rad);
+        const lx = state.opX + lOffset.x, ly = state.opY + lOffset.y;
+        const rx = state.opX + rOffset.x, ry = state.opY + rOffset.y;
+
+        const vL = calcV(lx, ly, state.defX, state.defY, state.gain);
+        const vR = calcV(rx, ry, state.defX, state.defY, state.gain);
+        const sCurr = (vL + vR) / 2;
+
+        const fwdOffset = rotatePoint(0, -1.0, rad);
+        const vLfwd = calcV(lx + fwdOffset.x, ly + fwdOffset.y, state.defX, state.defY, state.gain);
+        const vRfwd = calcV(rx + fwdOffset.x, ry + fwdOffset.y, state.defX, state.defY, state.gain);
+        const sPrev = (vLfwd + vRfwd) / 2;
+
+        const Gx = vR - vL;
+        const Gy = sCurr - sPrev;
+        const A = Math.sqrt(Gx*Gx + Gy*Gy);
+        let theta = Math.atan2(Gy, Gx) - rad;
+
+        // --- DRAW MAP ---
+        ctxMap.clearRect(0, 0, cMap.width, cMap.height);
+        
+        ctxMap.strokeStyle = '#333'; ctxMap.lineWidth = 1;
+        for(let i=mapBounds.minX; i<=mapBounds.maxX; i++) {
+            let p = mapToScreen(i, 0);
+            ctxMap.beginPath(); ctxMap.moveTo(p.x, 0); ctxMap.lineTo(p.x, cMap.height); ctxMap.stroke();
+        }
+        for(let i=mapBounds.minY; i<=mapBounds.maxY; i+=2) {
+            let p = mapToScreen(0, i);
+            ctxMap.beginPath(); ctxMap.moveTo(0, p.y); ctxMap.lineTo(cMap.width, p.y); ctxMap.stroke();
+        }
+        
+        const pipeCenter = mapToScreen(0, 0);
+        ctxMap.strokeStyle = '#555'; ctxMap.lineWidth = 4;
+        ctxMap.beginPath(); ctxMap.moveTo(pipeCenter.x, 0); ctxMap.lineTo(pipeCenter.x, cMap.height); ctxMap.stroke();
+
+        const dPos = mapToScreen(state.defX, state.defY);
+        ctxMap.strokeStyle = 'red'; ctxMap.lineWidth = 3;
+        ctxMap.beginPath(); ctxMap.moveTo(dPos.x-10, dPos.y-10); ctxMap.lineTo(dPos.x+10, dPos.y+10); ctxMap.stroke();
+        ctxMap.beginPath(); ctxMap.moveTo(dPos.x+10, dPos.y-10); ctxMap.lineTo(dPos.x-10, dPos.y+10); ctxMap.stroke();
+
+        const lPos = mapToScreen(lx, ly);
+        const rPos = mapToScreen(rx, ry);
+        const oPos = mapToScreen(state.opX, state.opY);
+        
+        ctxMap.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctxMap.beginPath(); ctxMap.moveTo(lPos.x, lPos.y); ctxMap.lineTo(rPos.x, rPos.y); ctxMap.stroke();
+        
+        ctxMap.fillStyle = '#2196F3'; ctxMap.beginPath(); ctxMap.arc(lPos.x, lPos.y, 6, 0, Math.PI*2); ctxMap.fill();
+        ctxMap.fillStyle = '#4CAF50'; ctxMap.beginPath(); ctxMap.arc(rPos.x, rPos.y, 6, 0, Math.PI*2); ctxMap.fill();
+        ctxMap.fillStyle = 'white'; ctxMap.beginPath(); ctxMap.arc(oPos.x, oPos.y, 4, 0, Math.PI*2); ctxMap.fill();
+
+        // --- DRAW SMART COMPASS ---
+        ctxCompass.clearRect(0, 0, cCompass.width, cCompass.height);
+        const ccX = cCompass.width / 2;
+        const ccY = cCompass.height / 2;
+        const radius = Math.min(ccX, ccY) * 0.8;
+
+        ctxCompass.strokeStyle = '#333'; ctxCompass.lineWidth = 1;
+        ctxCompass.beginPath(); ctxCompass.moveTo(ccX, 0); ctxCompass.lineTo(ccX, cCompass.height); ctxCompass.stroke();
+        ctxCompass.beginPath(); ctxCompass.moveTo(0, ccY); ctxCompass.lineTo(cCompass.width, ccY); ctxCompass.stroke();
+
+        if (A < 50.0) {
+            const normA = Math.min(1.0, Math.sqrt(A / 50.0));
+            const targetDist = radius * (1.0 - normA);
+            const tx = ccX + targetDist * Math.cos(theta);
+            const ty = ccY - targetDist * Math.sin(theta);
+            
+            ctxCompass.strokeStyle = 'red'; ctxCompass.lineWidth = 3;
+            ctxCompass.beginPath(); ctxCompass.moveTo(tx-8, ty-8); ctxCompass.lineTo(tx+8, ty+8); ctxCompass.stroke();
+            ctxCompass.beginPath(); ctxCompass.moveTo(tx+8, ty-8); ctxCompass.lineTo(tx-8, ty+8); ctxCompass.stroke();
+        } else {
+            const size = Math.max(5, 50 - A * 0.1);
+            ctxCompass.strokeStyle = '#4CAF50'; ctxCompass.lineWidth = 4;
+            ctxCompass.beginPath(); ctxCompass.arc(ccX, ccY, size, 0, Math.PI*2); ctxCompass.stroke();
+        }
+
+        let normA_arrow = Math.min(1.0, A / (state.gain / 50));
+        let scale = state.invertArrow ? (1.0 - normA_arrow) : normA_arrow;
+        const len = (0.3 + 1.2 * scale) * radius;
+        
+        const ax = ccX + len * Math.cos(theta);
+        const ay = ccY - len * Math.sin(theta); 
+
+        ctxCompass.strokeStyle = `rgba(255, 152, 0, ${alpha})`;
+        ctxCompass.fillStyle = `rgba(255, 152, 0, ${alpha})`;
+        ctxCompass.lineWidth = 6;
+        ctxCompass.beginPath(); ctxCompass.moveTo(ccX, ccY); ctxCompass.lineTo(ax, ay); ctxCompass.stroke();
+        
+        const headAngle = Math.PI / 6;
+        ctxCompass.beginPath();
+        ctxCompass.moveTo(ax, ay);
+        ctxCompass.lineTo(ax - 15 * Math.cos(theta - headAngle), ay + 15 * Math.sin(theta - headAngle));
+        ctxCompass.lineTo(ax - 15 * Math.cos(theta + headAngle), ay + 15 * Math.sin(theta + headAngle));
+        ctxCompass.fill();
+
+        readoutCompass.innerHTML = `Gx: ${Gx.toFixed(1)}<br>Gy: ${Gy.toFixed(1)}<br>A:  ${A.toFixed(1)}`;
+
+        // --- DRAW LEGACY DIAL ---
+        ctxDial.clearRect(0, 0, cDial.width, cDial.height);
+        const cdX = cDial.width / 2;
+        const cdY = cDial.height * 0.85;
+        const dRadius = Math.min(cDial.width/2, cDial.height) * 0.75;
+
+        ctxDial.strokeStyle = '#fff'; ctxDial.lineWidth = 3;
+        ctxDial.beginPath(); ctxDial.arc(cdX, cdY, dRadius, Math.PI, 0); ctxDial.stroke();
+
+        [-1.0, -0.5, 0.0, 0.5, 1.0].forEach(val => {
+            const angle = Math.PI * 1.5 + (val * Math.PI / 2);
+            const isCenter = val === 0.0;
+            const rIn = isCenter ? dRadius * 0.85 : dRadius * 0.9;
+            
+            ctxDial.strokeStyle = '#fff'; ctxDial.lineWidth = isCenter ? 4 : 2;
+            ctxDial.beginPath();
+            ctxDial.moveTo(cdX + rIn * Math.cos(angle), cdY + rIn * Math.sin(angle));
+            ctxDial.lineTo(cdX + dRadius * Math.cos(angle), cdY + dRadius * Math.sin(angle));
+            ctxDial.stroke();
+
+            ctxDial.fillStyle = '#fff';
+            ctxDial.font = isCenter ? 'bold 16px sans-serif' : '12px sans-serif';
+            ctxDial.textAlign = 'center'; ctxDial.textBaseline = 'middle';
+            const label = isCenter ? '0' : `${val > 0 ? '+' : ''}${val * 100}%`;
+            ctxDial.fillText(label, cdX + (dRadius + 25) * Math.cos(angle), cdY + (dRadius + 25) * Math.sin(angle));
+        });
+
+        const pulsedGx = Gx * alpha;
+        let targetMeter = (pulsedGx / (state.gain / 20)) * state.legGain;
+        targetMeter = Math.max(-1.0, Math.min(1.0, targetMeter));
+
+        if (Math.abs(targetMeter) < Math.abs(state.needlePos)) {
+            state.needlePos -= state.needlePos * state.decay;
+        } else {
+            state.needlePos += (targetMeter - state.needlePos) * 0.8;
+        }
+
+        const nAngle = Math.PI * 1.5 + (state.needlePos * Math.PI / 2);
+        ctxDial.strokeStyle = `rgba(244, 67, 54, ${0.3 + 0.7 * alpha})`;
+        ctxDial.lineWidth = 6;
+        ctxDial.lineCap = 'round';
+        ctxDial.beginPath();
+        ctxDial.moveTo(cdX, cdY);
+        ctxDial.lineTo(cdX + dRadius * 0.95 * Math.cos(nAngle), cdY + dRadius * 0.95 * Math.sin(nAngle));
+        ctxDial.stroke();
+        
+        ctxDial.fillStyle = '#333';
+        ctxDial.beginPath(); ctxDial.arc(cdX, cdY, 12, 0, Math.PI*2); ctxDial.fill();
+        ctxDial.lineWidth = 2; ctxDial.stroke();
+
+        requestAnimationFrame(render);
+    }
+
+    render();
+</script>
+</body>
+</html>
