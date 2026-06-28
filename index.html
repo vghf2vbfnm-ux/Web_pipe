@@ -27,9 +27,12 @@
 </head>
 <body>
     <h1>Defect Simulator</h1>
-    <div class="dashboard">
-        <div class="controls" id="controls"></div>
+    <div class="dashboard">      
         <div class="middle-panels">
+            <div class="panel">
+                <div class="panel-header">Legacy Analog Dial (Difference)</div>
+                <div class="canvas-container"><canvas id="canvasDial"></canvas></div>
+            </div>            
             <div class="panel">
                 <div class="panel-header">Smart Compass (Vector)</div>
                 <div class="canvas-container">
@@ -37,15 +40,12 @@
                     <div id="readoutCompass" class="readout"></div>
                 </div>
             </div>
-            <div class="panel">
-                <div class="panel-header">Legacy Analog Dial (Difference)</div>
-                <div class="canvas-container"><canvas id="canvasDial"></canvas></div>
-            </div>
         </div>
         <div class="panel map-panel">
             <div class="panel-header">Physical Map (Drag Probes)</div>
             <div class="canvas-container"><canvas id="canvasMap"></canvas></div>
         </div>
+        <div class="controls" id="controls"></div>
     </div>
 
 <script>
